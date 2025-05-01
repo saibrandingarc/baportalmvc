@@ -1,0 +1,24 @@
+﻿@{
+    ViewData["Title"] = "Deliverables";
+}
+<!-- Bootstrap CSS -->
+<link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+
+<!-- Bootstrap JS (optional, for interactive components) -->
+<script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+@if (ViewBag.Confirmation != null)
+{
+    <p style="color: green;">@ViewBag.Confirmation</p>
+}
+else
+{
+    <form asp-action="DeliverableFileUpload" method="post">
+        <div>
+            <input class="form-control" type="hidden" id="DeliverableId" name="DeliverableId" value="@Model.DeliverableId" style="width: 100%;" />
+            <label for="EditedText">Edit the AI-generated post:</label><br>
+            <textarea class="form-control" id="EditedText" name="EditedText" rows="15" cols="100" style="width=100%;">@Model.EditedText</textarea>
+        </div>
+        <br>
+        <button class="btn btn-primary" type="submit">Attact to Zoho</button>
+    </form>
+}
