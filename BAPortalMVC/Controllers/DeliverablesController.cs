@@ -1,4 +1,4 @@
-﻿// BAPortalMVC.Controllers.HomeController
+﻿// BAPortalMVC.Controllers.DeliverablesController
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,9 +22,9 @@ using Newtonsoft.Json.Linq;
 
 namespace BAPortalMVC.Controllers;
 
-public class HomeController : Controller
+public class DeliverablesController : Controller
 {
-    private readonly ILogger<HomeController> _logger;
+    private readonly ILogger<DeliverablesController> _logger;
 
     private readonly ZohoServices _zohoService;
 
@@ -34,7 +34,7 @@ public class HomeController : Controller
 
     private object googleServices;
 
-    public HomeController(ZohoServices zohoService, GoogleServices googleService, OpenAiServices openAiService, ILogger<HomeController> logger)
+    public DeliverablesController(ZohoServices zohoService, GoogleServices googleService, OpenAiServices openAiService, ILogger<DeliverablesController> logger)
     {
         _zohoService = zohoService;
         _googleService = googleService;
@@ -44,7 +44,7 @@ public class HomeController : Controller
 
     public IActionResult Index()
     {
-        return View();
+        return View("Deliverables");
     }
 
     public async Task<IActionResult> DeliverableAsync([FromRoute(Name = "id")] string DeliverableId)
@@ -169,7 +169,7 @@ public class HomeController : Controller
         return View("HolidayPost", model);
     }
 
-    [HttpGet("/AccountsEvergreen/{id}")]
+    [HttpGet("/AccountsEvergreen1/{id}")]
     public async Task<IActionResult> AccountsEvergreenAsync([FromRoute(Name = "id")] string AccountId)
     {
         using JsonDocument doc2 = JsonDocument.Parse(await _zohoService.GetAccountByIdAsync(AccountId));
@@ -180,8 +180,9 @@ public class HomeController : Controller
         {
             string folderId = await _googleService.GetFolderIdByNameAsync("Evergreen");
             string fileName = $"EverGreen_{accountName}_{DateTime.Now}.docx";
-            string fileId = await _googleService.CreateGoogleDocAsync(fileName, folderId);
+            string googleDocStatus = await _googleService.CreateGoogleDocAsync(fileName, folderId);
             List<DeliverableFileModel> fileModels = new List<DeliverableFileModel>();
+            string fileId = googleDocStatus.Split("/d/")[1].Split("/")[0];
             new List<Request>();
             foreach (Deliverable item in EvergreenList)
             {
@@ -252,21 +253,11 @@ public class HomeController : Controller
             }
             List<PostBookmarkInfo> googlestat = await _googleService.InsertContentToGoogleDocAsync(fileId, fileModels);
             Dictionary<string, string> bookmarkDict = googlestat.ToDictionary((PostBookmarkInfo b) => b.PostId, (PostBookmarkInfo b) => b.BookmarkUrl);
-            foreach (Deliverable deliverableData in EvergreenList)
+            foreach (Deliverable video in EvergreenList)
             {
-                if (bookmarkDict.TryGetValue(deliverableData.id, out var bookmarkUrl))
+                if (bookmarkDict.TryGetValue(video.id, out var bookmarkUrl))
                 {
-                    deliverableData.GDocs_Content = bookmarkUrl;
-                    var gdoc = new
-                    {
-                        GDocs_Content = bookmarkUrl
-                    };
-                    var wrapper = new
-                    {
-                        data = new[] { gdoc }
-                    };
-                    string jsonPayload = JsonConvert.SerializeObject(wrapper);
-                    Console.WriteLine("Deliverable Update Status : " + await _zohoService.UpdateZohoDeliverableAsync(deliverableData.id, jsonPayload));
+                    video.GDocs_Content = bookmarkUrl;
                 }
             }
             SharePermissionsAsync(fileId);
@@ -277,85 +268,59 @@ public class HomeController : Controller
         return View("Deliverable", "");
     }
 
-    [HttpGet("/AccountsHolidayPosts/{id}")]
+    [HttpGet("/AccountDeliverables/{type}/{id}")]
+    public async Task<IActionResult> AccountDeliverablesAsync([FromRoute(Name = "type")] string type, [FromRoute(Name = "id")] string AccountId)
+    {
+        string accounts = await _zohoService.GetAccountByIdAsync(AccountId);
+        JObject json = JObject.Parse(accounts);
+        JToken firstRecord = json["data"]!.First;
+        using JsonDocument doc1 = JsonDocument.Parse(accounts);
+        string accountName = Regex.Replace(doc1.RootElement.GetProperty("data")[0].GetProperty("Account_Name").GetString() ?? "", "[^a-zA-Z0-9\\s]", "").Replace(" ", "_");
+        Console.WriteLine("Account Name: " + accountName);
+        string nextYear = (DateTime.Now.Year + 1).ToString();
+        List<Deliverable> deliverables = await _zohoService.GetZohoDeliverablesByAccountIdCategoryYearAsync(AccountId, type, nextYear);
+        //new List<Deliverable>();
+        List<Deliverable> DeliverablePostsList = (type.Equals("Holidays", StringComparison.OrdinalIgnoreCase) ? deliverables.Where((Deliverable d) => (d.Topic_Category ?? "Unknown").Equals("holidays", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(d.Block) && d.Block.StartsWith(nextYear)).ToList() : ((!type.Equals("Evergreen", StringComparison.OrdinalIgnoreCase)) ? null : deliverables.Where((Deliverable d) => d.Active_Evergreen && !string.IsNullOrEmpty(d.Block) && d.Block.StartsWith(nextYear)).ToList()));
+        Console.WriteLine("Holidays : " + DeliverablePostsList.Count);
+        JsonConvert.SerializeObject(DeliverablePostsList, Formatting.Indented);
+        var data = new
+        {
+            CompanyName = firstRecord,
+            DeliverableType = type,
+            HolidaysList = DeliverablePostsList
+        };
+        base.ViewBag.Confirmation = DeliverablePostsList;
+        base.ViewBag.ErrorMessage = "";
+        return View("Deliverables", data);
+    }
+
+    [HttpGet("GetDeliverablesByYear/{account}/{year}")]
+    public async Task<List<Deliverable>> GetDeliverablesByYear(string account, string year)
+    {
+        string year2 = year;
+        string accounts = await _zohoService.GetAccountByIdAsync(account);
+        JObject json = JObject.Parse(accounts);
+        _ = json["data"]!.First;
+        using JsonDocument doc1 = JsonDocument.Parse(accounts);
+        string accountName = Regex.Replace(doc1.RootElement.GetProperty("data")[0].GetProperty("Account_Name").GetString() ?? "", "[^a-zA-Z0-9\\s]", "").Replace(" ", "_");
+        Console.WriteLine("Account Name: " + accountName);
+        List<Deliverable> holidaysList = (await _zohoService.GetZohoDeliverablesByAccountIdCategoryYearAsync(account, "Holidays", year2)).Where((Deliverable d) => d.Block != null && d.Block.StartsWith(year2)).ToList();
+        Console.WriteLine("Holidays : " + holidaysList.Count);
+        return holidaysList;
+    }
+
+    [HttpGet("/AccountsHolidayPosts1/{id}")]
     public async Task<IActionResult> AccountsHolidayPostsAsync([FromRoute(Name = "id")] string AccountId)
     {
-        using JsonDocument doc2 = JsonDocument.Parse(await _zohoService.GetAccountByIdAsync(AccountId));
-        string accountName = Regex.Replace(doc2.RootElement.GetProperty("data")[0].GetProperty("Account_Name").GetString() ?? "", "[^a-zA-Z0-9\\s]", "").Replace(" ", "_");
+        using JsonDocument doc1 = JsonDocument.Parse(await _zohoService.GetAccountByIdAsync(AccountId));
+        string accountName = Regex.Replace(doc1.RootElement.GetProperty("data")[0].GetProperty("Account_Name").GetString() ?? "", "[^a-zA-Z0-9\\s]", "").Replace(" ", "_");
         Console.WriteLine("Account Name: " + accountName);
         List<Deliverable> deliverables = await _zohoService.GetZohoDeliverablesByAccountIdAsync(AccountId);
-        int nextYear = DateTime.Now.Year - 1;
-        List<Deliverable> holidaysList = deliverables.Where((Deliverable d) => (d.Topic_Category ?? "Unknown").Equals("holidays", StringComparison.OrdinalIgnoreCase) && (d.Block?.StartsWith(nextYear.ToString()) ?? false)).ToList();
-        Console.WriteLine("e : " + holidaysList.Count);
-        string jsonString = JsonConvert.SerializeObject(holidaysList, Formatting.Indented);
-        if (holidaysList.Any())
-        {
-            string folderId = await _googleService.GetFolderIdByNameAsync("HolidayPosts");
-            string fileName = $"HolidayPosts_{accountName}_{DateTime.Now:yyyyMMdd_HHmmss}.docx";
-            string fileId = await _googleService.CreateGoogleDocAsync(fileName, folderId);
-            List<DeliverableFileModel> fileModels = new List<DeliverableFileModel>();
-            new List<Request>();
-            foreach (Deliverable item in holidaysList)
-            {
-                new DeliverableFileModel
-                {
-                    DeliverableId = item.id,
-                    EditedText = ""
-                };
-                Console.WriteLine("Holiday Item: " + item.id);
-                GoogleFileRequest googleFileRequest = new GoogleFileRequest
-                {
-                    CompanyName = item.Company_Name,
-                    CompanyWebsite = item.Company_Website,
-                    GoogleFileId = "1oAP8Co7UD4UlO6QOWABFUg6aEYxWC3cA",
-                    HolidaysList = item.Name
-                };
-                string personalizedContent = (await _googleService.ReadDriveFilesAsync(googleFileRequest)).Replace("[Company Name]", googleFileRequest.CompanyName, StringComparison.OrdinalIgnoreCase).Replace("[Company Website]", googleFileRequest.CompanyWebsite, StringComparison.OrdinalIgnoreCase).Replace("[HolidaysList]", googleFileRequest.HolidaysList, StringComparison.OrdinalIgnoreCase);
-                personalizedContent += "\n\nDo not include any disclaimer.";
-                JsonDocument doc = JsonDocument.Parse(await _openAiService.AskChatGPT(personalizedContent));
-                string outputText = doc.RootElement.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString();
-                string[] lines = outputText.Split('\n');
-                string[] array = lines;
-                foreach (string line2 in array)
-                {
-                    line2.Trim();
-                }
-                List<string> cleanedLines = lines.Where((string line) => !line.StartsWith("Certainly") && !line.StartsWith("---") && !line.StartsWith("Data Validation:") && !line.StartsWith("Tagline for Graphic:") && !line.StartsWith("Suggested Posting") && !line.StartsWith("Holiday")).ToList();
-                string.Join("\n", cleanedLines);
-                DeliverableFileModel filemodel = new DeliverableFileModel
-                {
-                    DeliverableId = item.id,
-                    EditedText = "outputText",
-                    Title = item.Name,
-                    Body = "mergedText",
-                    Url = "",
-                    Hashtags = "",
-                    ThumbnailUrl = ""
-                };
-                fileModels.Add(filemodel);
-            }
-            List<PostBookmarkInfo> googlestat = await _googleService.InsertContentToGoogleDocAsync(fileId, fileModels);
-            Dictionary<string, string> bookmarkDict = googlestat.ToDictionary((PostBookmarkInfo b) => b.PostId, (PostBookmarkInfo b) => b.BookmarkUrl);
-            foreach (Deliverable deliverableData in holidaysList)
-            {
-                if (bookmarkDict.TryGetValue(deliverableData.id, out var bookmarkUrl))
-                {
-                    var gdoc = new
-                    {
-                        GDocs_Content = bookmarkUrl
-                    };
-                    var wrapper = new
-                    {
-                        data = new[] { gdoc }
-                    };
-                    string jsonPayload = JsonConvert.SerializeObject(wrapper);
-                    Console.WriteLine("Deliverable Update Status : " + await _zohoService.UpdateZohoDeliverableAsync(deliverableData.id, jsonPayload));
-                }
-            }
-            SharePermissionsAsync(fileId);
-            Console.WriteLine(googlestat);
-        }
-        base.ViewBag.Confirmation = jsonString;
+        _ = DateTime.Now.Year + 1;
+        List<Deliverable> holidaysList = deliverables.Where((Deliverable d) => (d.Topic_Category ?? "Unknown").Equals("holidays", StringComparison.OrdinalIgnoreCase)).ToList();
+        Console.WriteLine("Holidays : " + holidaysList.Count);
+        JsonConvert.SerializeObject(holidaysList, Formatting.Indented);
+        base.ViewBag.Confirmation = holidaysList;
         base.ViewBag.ErrorMessage = "";
         return View("Deliverables", "");
     }
@@ -441,150 +406,5 @@ public class HomeController : Controller
     {
         List<string> emailList = new List<string> { "priti@brandingarc.com", "sai@brandingarc.com" };
         return await _googleService.ShareDocumentWithUsersAsync(FileId, emailList);
-    }
-
-    [HttpGet("/ListDriveId")]
-    public async Task<IActionResult> ListDriveIdAsync()
-    {
-        FileList fileContent = await _googleService.ListDriveFoldersAsync();
-        Console.WriteLine(fileContent);
-        base.ViewBag.ErrorMessage = "Error message";
-        base.ViewBag.Confirmation = "";
-        return View("DrivevList", fileContent);
-    }
-
-    [HttpGet("/AIDeliverable/{year}/{id}")]
-    public async Task<OkObjectResult> AIDeliverableAsync([FromRoute(Name = "year")] string year, [FromRoute(Name = "id")] string DeliverableId)
-    {
-        JObject json = JObject.Parse(await _zohoService.GetZohoDeliverablesByIdAsync(DeliverableId));
-        string Sub_Category_Social = (string?)json["Sub_Category_Social"];
-        string CompanyName = (string?)json["Company.Account_Name"];
-        _ = DateTime.Now.Year + 1;
-        int StatusCode = 0;
-        string airesponse = "";
-        string folderId = await _googleService.GetFolderIdByNameAsync("HolidayPosts");
-        string fileName = CompanyName.Replace(" ", "_") + "_HolidayPosts_" + year + ".docx";
-        string fileId = await _googleService.CreateGoogleDocAsync(fileName, folderId);
-        List<DeliverableFileModel> fileModels = new List<DeliverableFileModel>();
-        new DeliverableFileModel
-        {
-            DeliverableId = DeliverableId,
-            EditedText = ""
-        };
-        if (Sub_Category_Social == "Holiday Post")
-        {
-            new HolidayFileModel
-            {
-                DeliverableId = DeliverableId,
-                HolidayList = "",
-                CompanyName = (string?)json["Company.Account_Name"],
-                CompanyWebsite = (string?)json["Company.Website"]
-            };
-            Console.WriteLine("Holiday Item: " + DeliverableId);
-            GoogleFileRequest googleFileRequest2 = new GoogleFileRequest
-            {
-                CompanyName = (string?)json["Company.Account_Name"],
-                CompanyWebsite = (string?)json["Company.Website"],
-                GoogleFileId = "1oAP8Co7UD4UlO6QOWABFUg6aEYxWC3cA",
-                HolidaysList = (string?)json["Name"]
-            };
-            string personalizedContent2 = (await _googleService.ReadDriveFilesAsync(googleFileRequest2)).Replace("[Company Name]", googleFileRequest2.CompanyName, StringComparison.OrdinalIgnoreCase).Replace("[Company Website]", googleFileRequest2.CompanyWebsite, StringComparison.OrdinalIgnoreCase).Replace("[HolidaysList]", googleFileRequest2.HolidaysList, StringComparison.OrdinalIgnoreCase);
-            personalizedContent2 = personalizedContent2 + "\n\n[HolidaysName] - " + googleFileRequest2.HolidaysList + "\n[Company Website] - " + googleFileRequest2.CompanyWebsite + "\n\nDo not include any disclaimer.";
-            airesponse = await _openAiService.AskChatGPT(personalizedContent2);
-        }
-        else
-        {
-            new DeliverableFileModel
-            {
-                DeliverableId = DeliverableId,
-                EditedText = ""
-            };
-            string transcriptUrl = (string?)json["Transcript_URL"];
-            string thumbnailUrl = (string?)json["Thumbnail_URL"];
-            string finalDeliverable = (string?)json["Final_Deliverable"];
-            base.ViewBag.Id = "Transcript URL : " + transcriptUrl;
-            if (string.IsNullOrEmpty(transcriptUrl))
-            {
-                StatusCode = 500;
-            }
-            if (string.IsNullOrEmpty(thumbnailUrl))
-            {
-                StatusCode = 500;
-            }
-            if (string.IsNullOrEmpty(finalDeliverable))
-            {
-                StatusCode = 500;
-            }
-            if (StatusCode != 500)
-            {
-                bool ActiveEverGreen = (bool)json["Active_Evergreen"];
-                if (ActiveEverGreen)
-                {
-                    GoogleFileRequest googleFileRequest2 = new GoogleFileRequest
-                    {
-                        CompanyName = (string?)json["Company.Account_Name"],
-                        MainContentType = (string?)json["Main_Status"],
-                        Topic = (string?)json["Name"],
-                        FinalDeliverableUrl = (string?)json["Final_Deliverable"],
-                        ThumbnailUrl = (string?)json["Thumbnail_URL"],
-                        GoogleFileId = "1UmD6IvcvSqrHDb3KIo0Rz_5txh6DvH5o"
-                    };
-                    string personalizedContent = (await _googleService.ReadDriveFilesAsync(googleFileRequest2)).Replace("[Insert Company Name]", googleFileRequest2.CompanyName, StringComparison.OrdinalIgnoreCase).Replace("[Company Website]", googleFileRequest2.CompanyWebsite, StringComparison.OrdinalIgnoreCase).Replace("[HolidaysList]", googleFileRequest2.HolidaysList, StringComparison.OrdinalIgnoreCase)
-                        .Replace("[Insert URL]", googleFileRequest2.FinalDeliverableUrl, StringComparison.OrdinalIgnoreCase)
-                        .Replace("[Insert Thumbnail URL]", googleFileRequest2.ThumbnailUrl, StringComparison.OrdinalIgnoreCase)
-                        .Replace("[Use for content reference]", googleFileRequest2.TranscriptUrl, StringComparison.OrdinalIgnoreCase);
-                    await _openAiService.AskChatGPT(personalizedContent);
-                }
-                else
-                {
-                    _ = "It is not Evergreen." + ActiveEverGreen;
-                }
-            }
-        }
-        JsonDocument doc = JsonDocument.Parse(airesponse);
-        string outputText = doc.RootElement.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString();
-        string[] lines = outputText.Split('\n');
-        string[] array = lines;
-        foreach (string line2 in array)
-        {
-            line2.Trim();
-        }
-        List<string> cleanedLines = lines.Where((string line) => !line.StartsWith("Certainly") && !line.StartsWith("---") && !line.StartsWith("Data Validation:") && !line.StartsWith("Tagline for Graphic:") && !line.StartsWith("Suggested Posting") && !line.StartsWith("Holiday")).ToList();
-        string mergedText = string.Join("\n", cleanedLines);
-        DeliverableFileModel filemodel = new DeliverableFileModel
-        {
-            DeliverableId = DeliverableId,
-            EditedText = outputText,
-            Title = (string?)json["Name"],
-            Body = mergedText,
-            Url = "",
-            Hashtags = "",
-            ThumbnailUrl = ""
-        };
-        fileModels.Add(filemodel);
-        Dictionary<string, string> bookmarkDict = (await _googleService.InsertContentToGoogleDocAsync(fileId, fileModels)).ToDictionary((PostBookmarkInfo b) => b.PostId, (PostBookmarkInfo b) => b.BookmarkUrl);
-        if (bookmarkDict.TryGetValue(DeliverableId, out var bookmarkUrl))
-        {
-            var gdoc = new
-            {
-                GDocs_Content = bookmarkUrl
-            };
-            var wrapper = new
-            {
-                data = new[] { gdoc }
-            };
-            string jsonPayload = JsonConvert.SerializeObject(wrapper);
-            Console.WriteLine("Deliverable Update Status : " + await _zohoService.UpdateZohoDeliverableAsync(DeliverableId, jsonPayload));
-        }
-        var result = new
-        {
-            success = true,
-            message = "AI generated successfully.",
-            generatedId = DeliverableId,
-            timestamp = DateTime.UtcNow,
-            aicontent = airesponse,
-            bookmark = bookmarkDict
-        };
-        return Ok(result);
     }
 }

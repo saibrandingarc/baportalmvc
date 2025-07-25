@@ -1,0 +1,95 @@
+﻿@{
+    ViewData["Title"] = "Deliverables";
+    var currentYear = DateTime.Now.Year;
+}
+
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-12" id="ai_table_container">
+            <div class="card shadow" id="ai_table">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="text-white">Deliverables for @Model.CompanyName.Account_Name</h5>
+                    <h5 class="text-white">Company Website: @Model.CompanyName.Website</h5>
+                    <p><strong>Deliverable Type:</strong> @Model.DeliverableType</p>
+                </div>
+
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-12" id="showMessage"></div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="yearFilter"><strong>Filter by Year:</strong></label>
+                            <select id="yearFilter" class="form-select" onchange="loadDeliverablesByYear()">
+                                @for (int year = currentYear + 1; year >= currentYear - 4; year--)
+                                {
+                                    <option value="@year">@year</option>
+                                }
+                            </select>
+                            <input id="AccountId" name="AccountId" type="hidden" value="@Html.Encode(Model.CompanyName.id)" />
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table id="deliverablesTable" class="table table-bordered table-striped align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Quarter</th>
+                                    <th>Block</th>
+                                    <th>Topic Category</th>
+                                    <th>Status</th>
+                                    <th>Deliverable Name</th>
+                                    <th>Google URL</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deliverablesBody">
+                                @if (Model.HolidaysList != null)
+                                {
+                                    foreach (var deliverableData in Model.HolidaysList)
+                                    {
+                                        var rowClass = !string.IsNullOrWhiteSpace(deliverableData.GDocs_Content) ? "table-success" : "";
+                                        <tr class="@rowClass">
+                                            <td>@(deliverableData.Quarter ?? "-")</td>
+                                            <td>@deliverableData.Block</td>
+                                            <td>@deliverableData.Topic_Category</td>
+                                            <td>@deliverableData.Main_Status</td>
+                                            <td>@deliverableData.Name</td>
+                                            <td>
+                                                @if (!string.IsNullOrWhiteSpace(deliverableData.GDocs_Content))
+                                                {
+                                                    <a href="@deliverableData.GDocs_Content" target="_blank">Google Bookmark</a>
+                                                }
+                                            </td>
+                                            <td>
+                                                <a class="btn btn-sm btn-primary generateAI" data-id="@deliverableData.id">
+                                                    @(string.IsNullOrWhiteSpace(deliverableData.GDocs_Content) ? "Generate AI" : "Re-Generate AI")
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-5 d-none" id="ai_form_container">
+            <div class="card shadow" id="ai_form">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="text-white">Deliverables for @Model.CompanyName.Account_Name</h5>
+                    <h5 class="text-white">Company Website: @Model.CompanyName.Website</h5>
+                    <p><strong>Deliverable Type:</strong> @Model.DeliverableType</p>
+                </div>
+
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-12" id="showMessage"></div>
+                    </div>
+                    AI Form
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,19 +1,28 @@
-﻿using System;
-using Microsoft.AspNetCore.Mvc.RazorPages;
-using System.Security.Principal;
-using System.Text;
-using Newtonsoft.Json;
-using Microsoft.EntityFrameworkCore;
-using BAPortalMVC.Models;
-using Newtonsoft.Json.Linq;
+﻿// BAPortalMVC.Services.ZohoServices
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.Design;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
+using BAPortalMVC.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace BAPortalMVC.Services
 {
-	public class ZohoServices
-	{
+    public class ZohoServices
+    {
         private readonly IConfiguration _configuration;
+
         private readonly HttpClient _httpClient;
+
         private readonly ApplicationDbContext _context;
 
         public ZohoServices(IConfiguration configuration, HttpClient httpClient, ApplicationDbContext context)
@@ -25,765 +34,755 @@ namespace BAPortalMVC.Services
 
         public string GetAuthorizationUrl()
         {
-            var clientId = _configuration["Zoho:ClientId"];
-            var redirectUri = _configuration["Zoho:RedirectUri"];
-            var authEndpoint = _configuration["Zoho:AuthEndpoint"];
-
-            return $"{authEndpoint}?scope=AaaServer.profile.Read,ZohoCRM.modules.ALL&client_id={clientId}&response_type=token&access_type=offline&redirect_uri={redirectUri}";
+            string clientId = _configuration["Zoho:ClientId"];
+            string redirectUri = _configuration["Zoho:RedirectUri"];
+            string authEndpoint = _configuration["Zoho:AuthEndpoint"];
+            DefaultInterpolatedStringHandler defaultInterpolatedStringHandler = new DefaultInterpolatedStringHandler(114, 3);
+            defaultInterpolatedStringHandler.AppendFormatted(authEndpoint);
+            defaultInterpolatedStringHandler.AppendLiteral("?scope=AaaServer.profile.Read,ZohoCRM.modules.ALL&client_id=");
+            defaultInterpolatedStringHandler.AppendFormatted(clientId);
+            defaultInterpolatedStringHandler.AppendLiteral("&response_type=token&access_type=offline&redirect_uri=");
+            defaultInterpolatedStringHandler.AppendFormatted(redirectUri);
+            return defaultInterpolatedStringHandler.ToStringAndClear();
         }
 
-        // Method to Get Access Token
         public async Task<string> GetAccessTokenAsync()
         {
-            var clientId = _configuration["Zoho:ClientId"];
-            var clientSecret = _configuration["Zoho:ClientSecret"];
-            var tokenEndpoint = _configuration["Zoho:TokenEndpoint"];
-            var code = _configuration["Zoho:code"];
-
-            var client = new HttpClient();
-            var parameters = new Dictionary<string, string>
-            {
-                { "code", code },
-                { "client_id", clientId },
-                { "client_secret", clientSecret },
-                { "grant_type", "authorization_code" }
-            };
+            string clientId = _configuration["Zoho:ClientId"];
+            string clientSecret = _configuration["Zoho:ClientSecret"];
+            _ = _configuration["Zoho:TokenEndpoint"];
+            string code = _configuration["Zoho:code"];
+            HttpClient client = new HttpClient();
+            Dictionary<string, string> parameters = new Dictionary<string, string>
+        {
+            { "code", code },
+            { "client_id", clientId },
+            { "client_secret", clientSecret },
+            { "grant_type", "authorization_code" }
+        };
             try
             {
-                var response = await client.PostAsync("https://accounts.zoho.com/oauth/v2/token", new FormUrlEncodedContent(parameters));
-
+                HttpResponseMessage response = await client.PostAsync("https://accounts.zoho.com/oauth/v2/token", new FormUrlEncodedContent(parameters));
                 if (response.IsSuccessStatusCode)
                 {
-                    var json = await response.Content.ReadAsStringAsync();
-                    var responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(json);
+                    Dictionary<string, string> responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(await response.Content.ReadAsStringAsync());
                     if (responseData.ContainsKey("error"))
                     {
                         Console.WriteLine("Error: Missing required key");
                         return "";
                     }
-                    else
-                    {
-                        Console.WriteLine("no errors");
-                        var accessToken = await AddSettingsAsync(responseData);
-                        return accessToken;
-                    }
+                    Console.WriteLine("no errors");
+                    return await AddSettingsAsync(responseData);
                 }
-                else
-                {
-                    throw new Exception("Failed to regenerate token.");
-                }
+                throw new Exception("Failed to regenerate token.");
             }
-            catch (HttpRequestException ex)
+            catch (HttpRequestException ex2)
             {
-                Console.WriteLine($"Request failed: {ex.Message}");
-                return ex.Message;
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred: {ex.Message}");
+                Console.WriteLine("An error occurred: " + ex.Message);
                 return ex.Message;
             }
         }
 
         public async Task<string> GetValidTokenAsync()
         {
-            var settings = await _context.Settings
-                        .Where(p => p.tokenFrom == "zoho")
-                        .OrderByDescending(p => p.DateAdded)
-                        .FirstOrDefaultAsync();
-
+            Settings settings = await (from p in _context.Settings
+                                       where p.tokenFrom == "zoho"
+                                       orderby p.DateAdded descending
+                                       select p).FirstOrDefaultAsync();
             if (settings == null)
             {
-                var tokenObj = await GetAccessTokenAsync();
-                if (tokenObj == "")
+                if (await GetAccessTokenAsync() == "")
                 {
                     return "Invalid Token";
                 }
-                else
-                {
-                    settings = await _context.Settings
-                        .Where(p => p.tokenFrom == "zoho")
-                        .OrderByDescending(p => p.DateAdded)
-                        .FirstOrDefaultAsync();
-                }
+                settings = await (from p in _context.Settings
+                                  where p.tokenFrom == "zoho"
+                                  orderby p.DateAdded descending
+                                  select p).FirstOrDefaultAsync();
             }
-
-            // Calculate expiration time
-            var expirationTime = settings.DateAdded.AddSeconds(settings.ExpiresIn);
+            DateTime expirationTime = settings.DateAdded.AddSeconds(settings.ExpiresIn);
             Console.WriteLine(expirationTime);
             Console.WriteLine(DateTime.UtcNow);
             if (DateTime.UtcNow >= expirationTime)
             {
-                // Token has expired, regenerate using refresh token
-                var newToken = await RegenerateTokenAsync(settings.RefreshToken);
-
-                // Update the token and date in the settings table
-                settings.AccessToken = newToken;
+                string newToken = (settings.AccessToken = await RegenerateTokenAsync(settings.RefreshToken));
                 settings.DateAdded = DateTime.UtcNow;
-
                 await _context.SaveChangesAsync();
-
                 return newToken;
             }
-
-            // Token is still valid
             return settings.AccessToken;
         }
 
-        // Method to regenerate the token using the refresh token
         private async Task<string> RegenerateTokenAsync(string refreshToken)
         {
-            // Replace with actual API call to Zoho to regenerate the token
-            using (var httpClient = new HttpClient())
+            using HttpClient httpClient = new HttpClient();
+            string clientId = _configuration["Zoho:ClientId"];
+            string clientSecret = _configuration["Zoho:ClientSecret"];
+            _ = _configuration["Zoho:TokenEndpoint"];
+            _ = _configuration["Zoho:code"];
+            Dictionary<string, string> parameters = new Dictionary<string, string>
+        {
+            { "refresh_token", refreshToken },
+            { "client_id", clientId },
+            { "client_secret", clientSecret },
+            { "grant_type", "refresh_token" }
+        };
+            try
             {
-                var clientId = _configuration["Zoho:ClientId"];
-                var clientSecret = _configuration["Zoho:ClientSecret"];
-                var tokenEndpoint = _configuration["Zoho:TokenEndpoint"];
-                var code = _configuration["Zoho:code"];
-                var parameters = new Dictionary<string, string>
+                HttpResponseMessage response = await httpClient.PostAsync("https://accounts.zoho.com/oauth/v2/token", new FormUrlEncodedContent(parameters));
+                if (response.IsSuccessStatusCode)
                 {
-                    { "refresh_token", refreshToken },
-                    { "client_id", clientId },
-                    { "client_secret", clientSecret },
-                    { "grant_type", "refresh_token" }
-                };
-
-                try
-                {
-                    var response = await httpClient.PostAsync("https://accounts.zoho.com/oauth/v2/token", new FormUrlEncodedContent(parameters));
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var settings = await _context.Settings
-                            .Where(p => p.tokenFrom == "zoho")
-                            .OrderByDescending(p => p.DateAdded)
-                            .FirstOrDefaultAsync();
-
-                        var json = await response.Content.ReadAsStringAsync();
-                        var responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(json);
-
-                        // Return the new access token
-                        return responseData["access_token"];
-                    }
-                    else
-                    {
-                        throw new Exception("Failed to regenerate token.");
-                    }
+                    await (from p in _context.Settings
+                           where p.tokenFrom == "zoho"
+                           orderby p.DateAdded descending
+                           select p).FirstOrDefaultAsync();
+                    Dictionary<string, string> responseData = JsonConvert.DeserializeObject<Dictionary<string, string>>(await response.Content.ReadAsStringAsync());
+                    return responseData["access_token"];
                 }
-                catch (HttpRequestException ex)
-                {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                throw new Exception("Failed to regenerate token.");
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string?> AddSettingsAsync(Dictionary<string, string>? responseData)
         {
-            var accessToken = responseData["access_token"];
-            var existData = await _context.Settings
-                .Where(p => p.tokenFrom == "zoho")
-                .OrderByDescending(p => p.DateAdded)
-                .FirstOrDefaultAsync();
-
+            string accessToken = responseData!["access_token"];
+            Settings existData = await (from p in _context.Settings
+                                        where p.tokenFrom == "zoho"
+                                        orderby p.DateAdded descending
+                                        select p).FirstOrDefaultAsync();
             if (existData != null)
             {
                 existData.DateAdded = DateTime.UtcNow;
                 existData.AccessToken = accessToken;
-
-                // Save changes
                 await _context.SaveChangesAsync();
             }
             else
             {
-                var newSetting = new Settings
+                Settings newSetting = new Settings
                 {
-                    AccessToken = responseData["access_token"],
-                    RefreshToken = responseData["refresh_token"],
-                    Scope = responseData["scope"],
-                    ExpiresIn = int.Parse(responseData["expires_in"]),
+                    AccessToken = responseData!["access_token"],
+                    RefreshToken = responseData!["refresh_token"],
+                    Scope = responseData!["scope"],
+                    ExpiresIn = int.Parse(responseData!["expires_in"]),
                     DateAdded = DateTime.UtcNow,
                     tokenFrom = "zoho"
                 };
-
                 _context.Settings.Add(newSetting);
             }
-
             await _context.SaveChangesAsync();
             return accessToken;
         }
 
         public async Task<string> GetZohoDeliverablesByIdAsync(string DeliverableId)
         {
-            var accessToken = await GetValidTokenAsync();
-            Console.WriteLine("Access Token : "+accessToken);
+            string accessToken = await GetValidTokenAsync();
+            Console.WriteLine("Access Token : " + accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                string query = "\n                    {\n                        \"select_query\": \"select id, Active_Evergreen, Transcript_URL, Thumbnail_URL, Final_Deliverable, GDrive_Folder, Tool_Upload_Status,Quarter, Block, Credit_Multiplier, Credit_Cost, Main_Status, Topic_Category, Sub_Category_Article, Sub_Category_Graphics, Type_Category_Mass_Email, Type_Category_SEO, Sub_Category_Social, Sub_Category_Website, Sub_Category_YouTube1, Sub_Category_Other, Name, Short_Description, Company.id, Company.Account_Name, Company.Website, Email, Priority, Due_Date, Staff_Manager, Staff_SEO, Staff_Client_Contact, Admin_Approval.first_name as Admin_Approval_First_Name, Admin_Approval.last_name as Admin_Approval_Last_Name,Deliverable_Author, Quality_Control, Graphic_Designer, Web_Designer from Deliverables where (id=" + DeliverableId + ")\"\n                    }";
+                StringContent content = new StringContent(query, Encoding.UTF8, "application/json");
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
                 {
-                    var query = $@"
-                    {{
-                        ""select_query"": ""select id, Transcript_URL, Thumbnail_URL, Final_Deliverable, GDrive_Folder, Tool_Upload_Status,Quarter, Block, Credit_Multiplier, Credit_Cost, Main_Status, Topic_Category, Sub_Category_Article, Sub_Category_Graphics, Type_Category_Mass_Email, Type_Category_SEO, Sub_Category_Social, Sub_Category_Website, Sub_Category_YouTube1, Sub_Category_Other, Name, Short_Description, Company.id, Company.Account_Name, Email, Priority, Due_Date, Staff_Manager, Staff_SEO, Staff_Client_Contact, Admin_Approval.first_name as Admin_Approval_First_Name, Admin_Approval.last_name as Admin_Approval_Last_Name,Deliverable_Author, Quality_Control, Graphic_Designer, Web_Designer from Deliverables where (id={DeliverableId})""
-                    }}";
-                    var content = new StringContent(query, Encoding.UTF8, "application/json");
-                    var request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
-                    {
-                        Content = content
-                    };
+                    Content = content
+                };
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                JObject json = JObject.Parse(await response.Content.ReadAsStringAsync());
+                JToken firstRecord = json["data"]!.First;
+                return firstRecord.ToString();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
+            }
+        }
 
-                    request.Headers.Add("Authorization", $"Bearer {accessToken}");
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request : {response}");
-                    response.EnsureSuccessStatusCode();
-                    var deliverables = await response.Content.ReadAsStringAsync();
-                    var json = JObject.Parse(deliverables);
-                    var firstRecord = json["data"].First;
-                    return firstRecord.ToString();
-                }
-                catch (HttpRequestException ex)
+        public async Task<List<Deliverable>?> GetZohoDeliverablesByAccountIdAsync(string AccountId)
+        {
+            string accessToken = await GetValidTokenAsync();
+            Console.WriteLine("Access Token : " + accessToken);
+            if (accessToken == "Invalid Token")
+            {
+                return null;
+            }
+            try
+            {
+                string query = "\n                    {\n                        \"select_query\": \"select id, Active_Evergreen, Quarter, Block, Main_Status, Topic_Category, Name, Company.id as Company_Id, Company.Account_Name as Company_Name, Company.Website as Company_Website, GDocs_Content from Deliverables where (Company.id=" + AccountId + ")\"\n                    }";
+                StringContent content = new StringContent(query, Encoding.UTF8, "application/json");
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
+                    Content = content
+                };
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                JObject json = JObject.Parse(await response.Content.ReadAsStringAsync());
+                string dataArray = json["data"]?.ToString();
+                return JsonConvert.DeserializeObject<List<Deliverable>>(dataArray);
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return null;
+            }
+        }
+
+        public async Task<List<Deliverable>?> GetZohoDeliverablesByAccountIdCategoryYearAsync(string AccountId, string Category, string year)
+        {
+            string accessToken = await GetValidTokenAsync();
+            Console.WriteLine("Access Token : " + accessToken);
+            if (accessToken == "Invalid Token")
+            {
+                return null;
+            }
+            try
+            {
+                //var client = new HttpClient();
+                //var request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql");
+                //request.Headers.Add("Authorization", "Bearer " + accessToken);
+                ////request.Headers.Add("Cookie", "_zcsr_tmp=310c83be-41a0-4305-89a7-7a77f529cd5b; crmcsr=310c83be-41a0-4305-89a7-7a77f529cd5b");
+                //var content = new StringContent("\n{\n                    \"select_query\": \"select id, Active_Evergreen, Quarter, Block, Main_Status, Topic_Category, Name, Company.id as Company_Id, Company.Account_Name as Company_Name, Company.Website as Company_Website, GDocs_Content from Deliverables where (Company.id=3293516000000866604 and Topic_Category=Holidays) ORDER BY Due_Date DESC\"\n                }", null, "application/json");
+                //request.Content = content;
+                //var response = await _httpClient.SendAsync(request);
+                //response.EnsureSuccessStatusCode();
+                //Console.WriteLine(await response.Content.ReadAsStringAsync());
+                string query = $@"
+                {{
+                    ""select_query"": ""select id, Active_Evergreen, Quarter, Block, Main_Status, Topic_Category, Name, Company.id as Company_Id, Company.Account_Name as Company_Name, Company.Website as Company_Website, GDocs_Content from Deliverables where (Company.id={AccountId} and Topic_Category={Category}) ORDER BY Due_Date DESC""
+                }}";
+                
+                var content = new StringContent(query, Encoding.UTF8, "application/json");
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
                 {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    Content = content
+                };
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                var response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                JObject json = JObject.Parse(await response.Content.ReadAsStringAsync());
+                string dataArray = json["data"]?.ToString();
+                return JsonConvert.DeserializeObject<List<Deliverable>>(dataArray);
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return null;
             }
         }
 
         public async Task<HttpResponseMessage> UploadFileToZohoAsync(string deliverableId, string filePath)
         {
-            var accessToken = await GetValidTokenAsync();
-
-            string url = $"https://www.zohoapis.com/crm/v7/Deliverables/{deliverableId}/Attachments";
-
-            using var client = new HttpClient();
+            string accessToken = await GetValidTokenAsync();
+            string url = "https://www.zohoapis.com/crm/v7/Deliverables/" + deliverableId + "/Attachments";
+            using HttpClient client = new HttpClient();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", accessToken);
-
-            using var multipart = new MultipartFormDataContent();
-            using var fileStream = File.OpenRead(filePath);
-            var fileContent = new StreamContent(fileStream);
+            using MultipartFormDataContent multipart = new MultipartFormDataContent();
+            using FileStream fileStream = File.OpenRead(filePath);
+            StreamContent fileContent = new StreamContent(fileStream);
             fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
             multipart.Add(fileContent, "file", Path.GetFileName(filePath));
-
-            var response = await client.PostAsync(url, multipart);
-            return response;
+            return await client.PostAsync(url, multipart);
         }
 
         public async Task<string> GetZohoContactByEmailAsync(string email)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Contacts/search?email=" + email)
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Contacts/search?email=" + email)
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    response.EnsureSuccessStatusCode();
-
-                    var contact = await response.Content.ReadAsStringAsync();
-                    return contact;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoCasesAsync()
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases?fields=Case_Number,Subject,Status,Account_Name")
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases?fields=Case_Number,Subject,Status,Account_Name")
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    response.EnsureSuccessStatusCode();
-
-                    var cases = await response.Content.ReadAsStringAsync();
-                    return cases;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoCasesByCompanyAsync(string companyId)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/search?criteria=Account_Name.id:equals:" + companyId)
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/search?criteria=Account_Name.id:equals:" + companyId)
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    response.EnsureSuccessStatusCode();
-
-                    var cases = await response.Content.ReadAsStringAsync();
-                    return cases;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoCasesByCompanyForDahsboardAsync(string companyId)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                string formattedDate = DateTime.UtcNow.AddYears(-2).ToString("yyyy-MM-dd");
+                string criteria = "(Case_Open_Date:greater_than:" + formattedDate + ")";
+                string criteria2 = "(Account_Name.id:equals: " + companyId + ")";
+                Uri.EscapeDataString(criteria);
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/search?criteria=(" + criteria + " and " + criteria2 + ")")
                 {
-                    // Calculate the date 2 years ago
-                    DateTime twoYearsAgo = DateTime.UtcNow.AddYears(-2);
-                    string formattedDate = twoYearsAgo.ToString("yyyy-MM-dd");
-
-                    // Build the criteria
-                    string criteria = $"(Case_Open_Date:greater_than:{formattedDate})";
-                    string criteria2 = "(Account_Name.id:equals: " + companyId + ")";
-                    string encodedCriteria = Uri.EscapeDataString(criteria);
-
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/search?criteria=(" + criteria + " and " + criteria2 + ")")
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    //response.EnsureSuccessStatusCode();
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var cases = await response.Content.ReadAsStringAsync();
-                        return cases;
-                    }
-
-                    // Handle failure
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    return errorContent;
-
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                if (response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
+                    return await response.Content.ReadAsStringAsync();
                 }
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoCaseByIdAsync(string companyId, string caseNumber)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/" + caseNumber)
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Cases/" + caseNumber)
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    response.EnsureSuccessStatusCode();
-
-                    var cases = await response.Content.ReadAsStringAsync();
-                    return cases;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoDeliverablesByCompanyAsync(string companyId)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Deliverables/search?criteria=Company.id:equals:" + companyId)
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Deliverables/search?criteria=Company.id:equals:" + companyId)
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    response.EnsureSuccessStatusCode();
-
-                    var deliverables = await response.Content.ReadAsStringAsync();
-                    return deliverables;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoDeliverablesByCompanyAndBlockAsync(string companyId, string blockId)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                string query = $@"
+                {{
+                    ""select_query"": ""select id, Tool_Upload_Status, Quarter, Block, Credit_Multiplier, Credit_Cost, Main_Status, Topic_Category, Sub_Category_Article, Sub_Category_Graphics, Type_Category_Mass_Email, Type_Category_SEO, Sub_Category_Social, Sub_Category_Website, Sub_Category_YouTube1, Sub_Category_Other, Name, Short_Description, Company.id, Company.Account_Name, Email, Priority, Due_Date, Staff_Manager, Staff_SEO, Staff_Client_Contact, Admin_Approval.first_name as Admin_Approval_First_Name, Admin_Approval.last_name as Admin_Approval_Last_Name, Deliverable_Author, Quality_Control, Graphic_Designer, Web_Designer 
+                    from Deliverables 
+                    where (Company={companyId} and Block like '{blockId}%')""
+                }}";
+                StringContent content = new StringContent(query, Encoding.UTF8, "application/json");
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
                 {
-                    var query = $@"
-                    {{
-                        ""select_query"": ""select id, Tool_Upload_Status, Quarter, Block, Credit_Multiplier, Credit_Cost, Main_Status, Topic_Category, Sub_Category_Article, Sub_Category_Graphics, Type_Category_Mass_Email, Type_Category_SEO, Sub_Category_Social, Sub_Category_Website, Sub_Category_YouTube1, Sub_Category_Other, Name, Short_Description, Company.id, Company.Account_Name, Email, Priority, Due_Date, Staff_Manager, Staff_SEO, Staff_Client_Contact, Admin_Approval.first_name as Admin_Approval_First_Name, Admin_Approval.last_name as Admin_Approval_Last_Name, Deliverable_Author, Quality_Control, Graphic_Designer, Web_Designer from Deliverables where (Company={companyId} and Block like '{blockId}%')""
-                    }}";
-                    var content = new StringContent(query, Encoding.UTF8, "application/json");
-                    var request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
-                    {
-                        Content = content
-                    };
-
-                    request.Headers.Add("Authorization", $"Bearer {accessToken}");
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine($"Request failed: {response}");
-                    response.EnsureSuccessStatusCode();
-                    var deliverables = await response.Content.ReadAsStringAsync();
-                    return deliverables;
-                }
-                catch (HttpRequestException ex)
-                {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    Content = content
+                };
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request failed: {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
-        //public async Task<string> SaveZohoCasesAsync(CaseModel caseObj)
-        //{
-        //    var accessToken = await GetValidTokenAsync();
-        //    Console.WriteLine(accessToken);
-        //    if (accessToken == "Invalid Token")
-        //    {
-        //        return null;
-        //    }
-        //    else
-        //    {
-        //        try
-        //        {
-        //            var acc = new Account { id = caseObj.Account_Name.id };
-        //            var caseData = new
-        //            {
-        //                data = new[]
-        //                {
-        //                    new CaseModel
-        //                    {
-        //                        //Owner = new Owner { id = "user-id" },
-        //                        //Product_Name = new Owner { id = "product-id" },
-        //                        //Deal_Name = new Owner { id = "deal-id" },
-        //                        Account_Name = acc,
-        //                        //Related_To = new Owner { id = "contact-id" },
-        //                        Status = "New",
-        //                        Email = caseObj.Email,
-        //                        Description = caseObj.Description,
-        //                        Internal_Comments = "",
-        //                        Priority = "Medium",
-        //                        Reported_By = "",
-        //                        Case_Origin = "",
-        //                        Case_Reason = "",
-        //                        Subject = caseObj.Subject,
-        //                        Type = "",
-        //                        Phone = "",
-        //                        Email_Notes1 = caseObj.Email_Notes1
-        //                    }
-        //                }
-        //            };
-
-        //            // Serialize the case data to JSON
-        //            string jsonPayload = System.Text.Json.JsonSerializer.Serialize(caseData);
-        //            Console.WriteLine(jsonPayload);
-        //            // Create StringContent with the JSON payload, UTF-8 encoding, and application/json MIME type
-        //            var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-        //            Console.WriteLine(content);
-
-        //            var request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/Cases");
-        //            request.Headers.Add("Authorization", $"Bearer {accessToken}");
-
-        //            //var content = new StringContent("{\n\t\"data\": [\n\t\t{\n            \"Account_Name\": {\n                \"id\": \"3293516000108143104\"\n            },\n            \"Status\": \"\",\n            \"Description\": \"test description\",\n            \"Internal_Comments\": \"\",\n            \"Priority\": \"\",\n            \"Reported_By\": \"\",\n            \"Case_Origin\": \"\",\n            \"Case_Reason\": \"\",\n            \"Subject\": \"test subject 1\",\n            \"Type\": \"\",\n            \"Phone\": \"\"\n        }\n\t]\n}", null, "application/json");
-        //            request.Content = content;
-        //            var response = await _httpClient.SendAsync(request);
-        //            Console.WriteLine(response);
-        //            response.EnsureSuccessStatusCode();
-        //            var response_json = await response.Content.ReadAsStringAsync();
-        //            Console.WriteLine(await response.Content.ReadAsStringAsync());
-        //            return response_json.ToString();
-        //        }
-        //        catch (HttpRequestException ex)
-        //        {
-        //            Console.WriteLine($"Request failed: {ex.Message}");
-        //            return ex.Message;
-        //        }
-        //        catch (Exception ex)
-        //        {
-        //            Console.WriteLine($"An error occurred: {ex.Message}");
-        //            return ex.Message;
-        //        }
-        //    }
-        //}
-
         public async Task<string> UpdateZohoCasesAsync(string jsonPayload, string id)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
-                {
-                    // Create StringContent with the JSON payload, UTF-8 encoding, and application/json MIME type
-                    var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    Console.WriteLine(content);
-
-                    var request = new HttpRequestMessage(HttpMethod.Put, "https://www.zohoapis.com/crm/v7/Cases/" + id);
-                    request.Headers.Add("Authorization", $"Bearer {accessToken}");
-
-                    request.Content = content;
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine(response);
-                    response.EnsureSuccessStatusCode();
-                    var response_json = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine(await response.Content.ReadAsStringAsync());
-                    return response_json.ToString();
-                }
-                catch (HttpRequestException ex)
-                {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                Console.WriteLine(content);
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Put, "https://www.zohoapis.com/crm/v7/Cases/" + id);
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                request.Content = content;
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine(response);
+                response.EnsureSuccessStatusCode();
+                string response_json = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(await response.Content.ReadAsStringAsync());
+                return response_json.ToString();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> checkEmail(string email)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Contacts/search?email=" + email)
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Contacts/search?email=" + email)
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-                    var content = new StringContent("", null, "text/plain");
-                    request.Content = content;
-                    var response = await _httpClient.SendAsync(request);
-                    response.EnsureSuccessStatusCode();
-                    var userInfo = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine(await response.Content.ReadAsStringAsync());
-                    return userInfo;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                StringContent content = (StringContent)(request.Content = new StringContent("", null, "text/plain"));
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                string userInfo = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(await response.Content.ReadAsStringAsync());
+                return userInfo;
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> GetZohoCompanies()
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Accounts/search?criteria=(MD_Status:equals:Active)&fields=Account_Name,Short_Name")
                 {
-                    var request = new HttpRequestMessage(HttpMethod.Get, "https://www.zohoapis.com/crm/v7/Accounts/search?criteria=(MD_Status:equals:Active)&fields=Account_Name,Short_Name")
-                    {
-                        Headers = { { "Authorization", $"Bearer {accessToken}" } }
-                    };
-                    var content = new StringContent("", null, "text/plain");
-                    request.Content = content;
-                    var response = await _httpClient.SendAsync(request);
-                    response.EnsureSuccessStatusCode();
-                    var userInfo = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine(await response.Content.ReadAsStringAsync());
-                    return userInfo;
-                }
-                catch (HttpRequestException ex)
+                    Headers = {
                 {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                    "Authorization",
+                    "Bearer " + accessToken
+                } }
+                };
+                StringContent content = (StringContent)(request.Content = new StringContent("", null, "text/plain"));
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                string userInfo = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(await response.Content.ReadAsStringAsync());
+                return userInfo;
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
         public async Task<string> DeleteZohoCasesAsync(string id)
         {
-            var accessToken = await GetValidTokenAsync();
+            string accessToken = await GetValidTokenAsync();
             Console.WriteLine(accessToken);
             if (accessToken == "Invalid Token")
             {
                 return null;
             }
-            else
+            try
             {
-                try
-                {
-                    var request = new HttpRequestMessage(HttpMethod.Delete, "https://www.zohoapis.com/crm/v7/Cases/" + id);
-                    request.Headers.Add("Authorization", $"Bearer {accessToken}");
-                    var response = await _httpClient.SendAsync(request);
-                    Console.WriteLine(response);
-                    response.EnsureSuccessStatusCode();
-                    var response_json = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine(await response.Content.ReadAsStringAsync());
-                    return response_json.ToString();
-                }
-                catch (HttpRequestException ex)
-                {
-                    Console.WriteLine($"Request failed: {ex.Message}");
-                    return ex.Message;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    return ex.Message;
-                }
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Delete, "https://www.zohoapis.com/crm/v7/Cases/" + id);
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine(response);
+                response.EnsureSuccessStatusCode();
+                string response_json = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(await response.Content.ReadAsStringAsync());
+                return response_json.ToString();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
             }
         }
 
-        internal Task GetZohoDeliverablesByCompanyAndBlockAsync(string companyId)
+        public async Task<string> GetAccountByIdAsync(string AccountId)
         {
-            throw new NotImplementedException();
+            string accessToken = await GetValidTokenAsync();
+            Console.WriteLine("Access Token : " + accessToken);
+            if (accessToken == "Invalid Token")
+            {
+                return null;
+            }
+            try
+            {
+                string query = "\n                    {\n                        \"select_query\": \"select id, Account_Name, Website from Accounts where (id=" + AccountId + ")\"\n                    }";
+                StringContent content = new StringContent(query, Encoding.UTF8, "application/json");
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://www.zohoapis.com/crm/v7/coql")
+                {
+                    Content = content
+                };
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine($"Request : {response}");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return null;
+            }
+        }
+
+        public async Task<string> UpdateZohoDeliverableAsync(string deliverableId, string jsonPayload)
+        {
+            string accessToken = await GetValidTokenAsync();
+            if (accessToken == "Invalid Token")
+            {
+                return null;
+            }
+            try
+            {
+                string url = "https://www.zohoapis.com/crm/v7/Deliverables/" + deliverableId;
+                StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                Console.WriteLine(content);
+                HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Put, url);
+                request.Headers.Add("Authorization", "Bearer " + accessToken);
+                request.Content = content;
+                HttpResponseMessage response = await _httpClient.SendAsync(request);
+                Console.WriteLine(response);
+                response.EnsureSuccessStatusCode();
+                string response_json = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(await response.Content.ReadAsStringAsync());
+                return response_json.ToString();
+            }
+            catch (HttpRequestException ex2)
+            {
+                Console.WriteLine("Request failed: " + ex2.Message);
+                return ex2.Message;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("An error occurred: " + ex.Message);
+                return ex.Message;
+            }
         }
     }
 }
